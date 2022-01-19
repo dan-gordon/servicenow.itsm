@@ -21,6 +21,7 @@ from ..module_utils.client import Client
 from ..module_utils.errors import ServiceNowError
 from ..module_utils.query import parse_query, serialize_query
 from ..module_utils.table import TableClient
+from ..module_utils.scripted_rest import ScriptedRESTClient
 
 
 DOCUMENTATION = r"""
@@ -96,6 +97,13 @@ options:
         env:
           - name: SN_TIMEOUT
         type: float
+  use_scripted_rest:
+    description: Flag to toggle if a custom Scripted REST API endpoint should be used instead of the Table API endpoint.  If true, `scripted_rest_path` is mandatory.
+    type: bool
+    default: false
+  scripted_rest_path:
+    description: The path to the Scripted REST API to use as the inventory source.
+    type: str
   table:
     description: The ServiceNow table to use as the inventory source.
     type: str
@@ -605,31 +613,40 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             client = Client(**self._get_instance())
         except ServiceNowError as e:
             raise AnsibleParserError(e)
-        table_client = TableClient(client)
 
-        table = self.get_option("table")
-        host_source = self.get_option("ansible_host_source")
-        name_source = self.get_option("inventory_hostname_source")
-        columns = self.get_option("columns")
-
-        if named_groups:
-            # Creates exactly the specified groups (which might be empty).
-            # Leaves nothing ungrouped.
-            self.fill_desired_groups(
-                table_client, table, host_source, name_source, columns, named_groups
+        use_custom = self.get_option("use_scripted_rest")
+        if use_custom:
+            scripted_rest_client = ScriptedRESTClient(client)
+            records = scripted_rest_client.get_data(
+                self.get_option("scripted_rest_path"), self.get_option("query")
             )
-            return
+        else:
+            table_client = TableClient(client)
 
-        if group_by:
-            self.fill_auto_groups(
-                table_client, table, host_source, name_source, columns, group_by
+            table = self.get_option("table")
+            host_source = self.get_option("ansible_host_source")
+            name_source = self.get_option("inventory_hostname_source")
+            columns = self.get_option("columns")
+
+            if named_groups:
+                # Creates exactly the specified groups (which might be empty).
+                # Leaves nothing ungrouped.
+                self.fill_desired_groups(
+                    table_client, table, host_source, name_source, columns, named_groups
+                )
+                return
+
+            if group_by:
+                self.fill_auto_groups(
+                    table_client, table, host_source, name_source, columns, group_by
+                )
+                return
+
+            # TODO: Insert caching here once we remove deprecated functionality
+            records = fetch_records(
+                table_client, self.get_option("table"), self.get_option("query")
             )
-            return
 
-        # TODO: Insert caching here once we remove deprecated functionality
-        records = fetch_records(
-            table_client, self.get_option("table"), self.get_option("query")
-        )
         self.fill_constructed(
             records,
             self.get_option("columns"),
